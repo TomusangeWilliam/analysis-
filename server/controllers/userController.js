@@ -1,0 +1,364 @@
+const xlsx = require('xlsx');
+const fs = require('fs');
+const User = require('../models/User');
+const capitalizeName = require('../utils/capitalizeName');
+const generateToken = require('../utils/generateToken');
+
+// @desc    Get the current logged-in user's profile
+// @route   GET /api/users/profile
+exports.getUserProfile = async (req, res) => {
+    if (req.user) {
+        res.json(req.user);
+    } else {
+        res.status(404).json({ message: 'User not found' });
+    }
+};
+
+// @desc    Get user by ID (for Admin)
+// @route   GET /api/users/:id
+exports.getUserById = async (req, res) => {
+    try {
+        const user = await User.findById(req.params.id).select('-password').populate('subjectsTaught.subject');
+        if (user) {
+            res.json(user);
+        } else {
+            res.status(404).json({ message: 'User not found' });
+        }
+    } catch (error) {
+        res.status(500).json({ message: 'Server Error' });
+    }
+};
+
+//get user by schoolLevel (for Staff or admin)
+//get /api/users/school-level
+exports.getUsersBySchoolLevel = async (req, res) => {
+
+    const user = req.user;
+    try {
+        if (!user) {
+            return res.status(401).json({ message: 'Not authorized' });
+        }
+
+        if(user.role === 'staff'){
+            const users = await User.find({ 'schoolLevel': user.schoolLevel }).select('-password').populate('subjectsTaught.subject');
+            res.status(200).json(users);
+        }else if(user.role === 'admin'){
+            const users = await User.find({}).select("-password").populate('subjectsTaught.subject');
+            return res.status(200).json(users);            
+        }else{
+            return res.status(403).json({ message: 'Access denied. Only staff or admin can access this resource.' });
+        }
+
+    } catch (error) {
+        console.error('Error in getUsersBySchoolLevel:', error);
+        return res.status(500).json({ message: 'Server Error', error: error.message });
+    }
+    
+
+};
+
+// @desc    Update user (for Admin to assign subjects)
+// @route   PUT /api/users/:id
+exports.updateUser = async (req, res) => {
+    try {
+        const userToUpdate = await User.findById(req.params.id);
+        if (!userToUpdate) {
+            return res.status(404).json({ message: 'User not found' });
+        }
+
+        const { fullName, role, subjectsTaught, homeroomClass, homeroomStream, schoolLevel } = req.body;
+
+        // --- VALIDATION 1: Check for Subject Assignment Conflicts ---
+        if (subjectsTaught) {
+            const subjectIdsToAssign = subjectsTaught.map(item => item.subject);
+            const conflictingTeacher = await User.findOne({
+                'subjectsTaught.subject': { $in: subjectIdsToAssign },
+                _id: { $ne: userToUpdate._id }
+            }).populate('subjectsTaught.subject');
+
+            if (conflictingTeacher) {
+                const conflictingSubject = conflictingTeacher.subjectsTaught.find(
+                    assignment => subjectIdsToAssign.includes(assignment.subject._id.toString())
+                ).subject;
+                return res.status(400).json({
+                    message: `Assignment failed. The subject "${conflictingSubject.name}" is already assigned to another teacher: ${conflictingTeacher.fullName}.`
+                });
+            }
+        }
+
+        // --- VALIDATION 2: Check for Homeroom Teacher Conflicts ---
+        // This check only runs if the admin is trying to assign a homeroom.
+        if (homeroomClass && homeroomStream) {
+            const conflictingHomeroomTeacher = await User.findOne({
+                homeroomClass: homeroomClass,
+                homeroomStream: homeroomStream,
+                _id: { $ne: userToUpdate._id }
+            });
+
+            if (conflictingHomeroomTeacher) {
+                return res.status(400).json({
+                    message: `Assignment failed. This class/stream already has a homeroom teacher: ${conflictingHomeroomTeacher.fullName}.`
+                });
+            }
+        }
+        
+        // --- If all validations pass, proceed with the update ---
+        userToUpdate.fullName = capitalizeName(fullName || userToUpdate.fullName);
+        userToUpdate.role = role || userToUpdate.role;
+        userToUpdate.schoolLevel = schoolLevel || userToUpdate.schoolLevel
+        
+        if (subjectsTaught !== undefined) {
+            userToUpdate.subjectsTaught = subjectsTaught;
+        }
+
+        if (homeroomClass !== undefined) {
+            userToUpdate.homeroomClass = homeroomClass || null;
+        }
+        if (homeroomStream !== undefined) {
+            userToUpdate.homeroomStream = homeroomStream || null;
+        }
+        
+        const updatedUser = await userToUpdate.save();
+        await updatedUser.populate('subjectsTaught.subject');
+        res.json(updatedUser);
+
+    } catch (error) {
+        console.error("Error updating user:", error);
+        res.status(500).json({ message: 'Server Error', details: error.message });
+    }
+};
+
+// @desc    Create multiple users from an uploaded Excel file (Admin only)
+// @route   POST /api/users/upload
+exports.bulkCreateUsers = async (req, res) => {
+    if (!req.file) {
+        return res.status(400).json({ message: 'No file uploaded.' });
+    }
+    const filePath = req.file.path;
+
+    try {
+        const workbook = xlsx.readFile(filePath);
+        const sheetName = workbook.SheetNames[0];
+        const worksheet = workbook.Sheets[sheetName];
+        const usersJson = xlsx.utils.sheet_to_json(worksheet);
+
+        if (usersJson.length === 0) {
+            fs.unlinkSync(filePath);
+            return res.status(400).json({ message: 'The Excel file is empty.' });
+        }
+
+        const usersToProcess = usersJson.map(user => {
+            const initialPassword = user['Password'] || user['password'];
+            if (!initialPassword) {
+                throw new Error(`Password is missing for user: ${user['Full Name'] || user['Username']}`);
+            }
+            return {
+                fullName: user['Full Name'] || user['fullName'],
+                username: user['Username'] || user['username'],
+                schoolLevel: user['schoolLevel'] || user['School Level'],
+                role: (user['Role'] || user['role'] || 'teacher').toLowerCase(),
+                password: initialPassword,
+                initialPassword: initialPassword
+            };
+        });
+        
+        // --- THE CRITICAL SECURITY FIX ---
+        // We replace the insecure insertMany with a secure loop.
+        const createdUsersForResponse = [];
+        for (const userData of usersToProcess) {
+            const user = new User({
+                fullName: capitalizeName(userData.fullName),
+                username: userData.username,
+                schoolLevel: userData.schoolLevel,
+                role: userData.role,
+                password: userData.password
+            });
+            await user.save();
+            
+            // Prepare the data for the final response
+            createdUsersForResponse.push({
+                fullName: user.fullName,
+                username: user.username,
+                role: user.role,
+                schoolLevel: user.schoolLevel,
+                initialPassword: userData.initialPassword
+            });
+        }
+        // --- END OF FIX ---
+
+        fs.unlinkSync(filePath);
+        res.status(201).json({
+            message: `${createdUsersForResponse.length} users imported successfully.`,
+            data: createdUsersForResponse
+        });
+
+    } catch (error) {
+        if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
+        if (error.code === 11000 || error.name === 'MongoBulkWriteError' || error.name === 'ValidationError') {
+            return res.status(400).json({ message: 'Import failed. One or more usernames may already exist or have invalid data.' });
+        }
+        console.error('Error importing users:', error);
+        res.status(500).json({ message: 'An error occurred during the import process.' });
+    }
+};
+
+// @desc    Get the homeroom teacher for a specific class/stream
+// @route   GET /api/users/homeroom-teacher?classId=...&streamId=...
+exports.getHomeroomTeacher = async (req, res) => {
+    const { classId, streamId } = req.query;
+    if (!classId || !streamId) {
+        return res.status(400).json({ message: 'Class and Stream are required.' });
+    }
+
+    try {
+        const homeroomTeacher = await User.findOne({
+            role: 'teacher',
+            homeroomClass: classId,
+            homeroomStream: streamId
+        }).select('fullName');
+
+        if (homeroomTeacher) {
+            res.json(homeroomTeacher);
+        } else {
+            res.status(404).json({ message: 'No homeroom teacher found for this grade level.' });
+        }
+    } catch (error) {
+        res.status(500).json({ message: 'Server Error' });
+    }
+};
+
+// @desc Update logged-in user's own profile
+// @route PUT /api/users/profile
+exports.updateUserProfile = async (req, res) => {
+    try {
+        const user = await User.findById(req.user._id).select("+password");
+
+        if (!user) {
+            return res.status(404).json({ message: "User not found" });
+        }
+
+        // Update full name
+        if (req.body.fullName) {
+            user.fullName = req.body.fullName;
+        }
+
+        // Change password section
+        if (req.body.currentPassword && req.body.newPassword) {
+
+            const isMatch = await user.matchPassword(req.body.currentPassword);
+            if (!isMatch) {
+                return res
+                    .status(401)
+                    .json({ message: "Incorrect current password." });
+            }
+
+            user.password = req.body.newPassword;
+        }
+
+        const updatedUser = await user.save();
+
+        const token = generateToken(updatedUser._id);
+
+        return res.json({
+            _id: updatedUser._id,
+            fullName: updatedUser.fullName,
+            username: updatedUser.username,
+            role: updatedUser.role,
+            token,
+        });
+
+    } catch (error) {
+        console.error("Error updating profile:", error);
+        return res.status(500).json({ message: "Server Error" });
+    }
+};
+
+// @desc UPDATE a user by Id (Admin only)
+//@route PUT /api/users/otheruser/:id
+exports.updateOtherUserProfile = async(req,res)=>{
+    try{
+        const userToEdit = await User.findById(req.params.id);
+        if (!userToEdit) {
+            return res.status(404).json({ message: 'User not found' });
+        }
+
+        userToEdit.fullName = req.body.fullName || userToEdit.fullName;
+        userToEdit.role = req.body.role || userToEdit.role;
+        userToEdit.schoolLevel = req.body.schoolLevel || userToEdit.schoolLevel;
+        if(req.body.password){
+            userToEdit.password = req.body.password;
+        }
+        const updatedUser = await userToEdit.save();
+        await updatedUser.populate('subjectsTaught.subject');
+        res.json(updatedUser);
+    }
+    catch(error){
+        res.status(500).json({ message: 'Server Error' });
+    }
+};
+
+// @desc    Delete a user by ID (Admin only)
+// @route   DELETE /api/users/:id
+exports.deleteUser = async (req, res) => {
+    try {
+        const userToDelete = await User.findById(req.params.id);
+
+        if (!userToDelete) {
+            return res.status(404).json({ message: 'User not found' });
+        }
+
+        await User.findByIdAndDelete(req.params.id);
+
+        res.json({ message: 'User deleted successfully' });
+    } catch (error) {
+        console.error("Error deleting user:", error);
+        res.status(500).json({ message: 'Server Error' });
+    }
+};
+// @desc    Get all teachers (Admin and Staff only)
+// @route   GET /api/users/teachers
+exports.getTeachers = async (req,res) => {
+    const user = req.user;
+
+    try {
+        if (user.role === 'staff') {
+            const teachers = await User.find({ role: 'teacher', 'schoolLevel': user.schoolLevel }).select("-password").populate('subjectsTaught.subject');
+            return res.status(200).json(teachers);
+        } else if (user.role === 'admin') {
+            const teachers = await User.find({role:"teacher"}).populate('subjectsTaught.subject')
+            res.status(200).json(teachers)
+        } else {
+            return res.status(403).json({ message: 'Access denied. Only staff or admin can access this resource.' });
+        }
+    } catch (error) {
+        res.status(500).json({message:error})
+    }
+}
+
+// @desc    Save Push Subscription
+// @route   POST /api/users/subscribe
+exports.saveSubscription = async (req, res) => {
+    try {
+        const subscription = req.body;
+        const userId = req.user._id;
+
+        let user = await User.findById(userId);
+        
+        if (!user) {
+            const Student = require('../models/Student');
+            user = await Student.findById(userId);
+        }
+
+        if (user) {
+            user.pushSubscription = subscription;
+            await user.save();
+            console.log(`🔔 Subscription saved for ${user.fullName}`);
+            res.status(201).json({ success: true });
+        } else {
+            res.status(404).json({ message: "User profile not found for subscription" });
+        }
+    } catch (error) {
+        console.error("Sub Error:", error);
+        res.status(500).json({ message: "Server Error" });
+    }
+};
