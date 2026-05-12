@@ -1,0 +1,310 @@
+import React, { useMemo } from 'react';
+import ReportCoverPage from '../pages/ReportCoverPage';
+
+const ReportCardDocument = ({ reportData, schoolInfoData, reportType = 'year' }) => {
+    
+    // --- DATA TRANSFORMATION & SORTING ---
+    const processedGrades = useMemo(() => {
+        if (!reportData || !reportData.grades) return [];
+        const sem1Grades = reportData.grades.filter(g => g.semester === 'First Semester');
+        const sem2Grades = reportData.grades.filter(g => g.semester === 'Second Semester');
+
+        // Get unique subject names
+        const allSubjects = new Set([
+            ...sem1Grades.map(g => g.subject?.name),
+            ...sem2Grades.map(g => g.subject?.name)
+        ]);
+
+        const gradesList = Array.from(allSubjects).map(subjectName => {
+            const g1 = sem1Grades.find(g => g.subject?.name === subjectName);
+            const g2 = sem2Grades.find(g => g.subject?.name === subjectName);
+            
+            const s1 = g1 ? g1.finalScore : null;
+            const s2 = g2 ? g2.finalScore : null;
+            
+            let average = null;
+            if (s1 !== null && s2 !== null) average = (s1 + s2) / 2;
+            else if (s1 !== null) average = s1;
+            else if (s2 !== null) average = s2;
+
+            return {
+                subjectName: subjectName,
+                firstSemester: s1 !== null ? s1 : '-',
+                secondSemester: s2 !== null ? s2 : '-',
+                average: average
+            };
+        });
+
+        // Your custom order
+       const SUBJECT_PRIORITY = [
+            "አማርኛ",
+            "ENGLISH",
+            "ሒሳብ",
+            "አካባቢ ሳይንስ",
+            "አጠቃላይ ሳይንስ",
+            "ግብረ ገብ",
+            "የዜግነት ት/ት",
+            "ህብረተሰብ",
+            "Affan Oromo",
+            "ስነጥበብ",
+            "ሙያ",
+            "ጤሰማ"
+        ];
+
+        return gradesList.sort((a, b) => {
+            const nameA = a.subjectName.trim();
+            const nameB = b.subjectName.trim();
+            const getIndex = (name) => {
+                const idx = SUBJECT_PRIORITY.findIndex(p => p.toLowerCase() === name.toLowerCase());
+                return idx === -1 ? Infinity : idx;
+            };
+            const indexA = getIndex(nameA);
+            const indexB = getIndex(nameB);
+
+            if (indexA !== indexB) return indexA - indexB;
+            return nameA.localeCompare(nameB);
+        });
+
+    }, [reportData]);
+
+    const getReportTitle = () => {
+        if (reportType === 'sem1') return "SEMESTER 1";
+        if (reportType === 'sem2') return "SEMESTER 2";
+        return "ANNUAL REPORT";
+    };
+
+    // Safe Destructuring (Updated with your JSON keys)
+    const { 
+        studentInfo = {}, 
+        semester1 = {}, 
+        semester2 = {}, 
+        finalAverage = '-', 
+        rank = {}, // This comes from the parent component merging it
+        behavior = {},
+        footerData = { sem1: {}, sem2: {} },
+        supportiveGrades={sem1:{},sem2:{}}
+    } = reportData || {};
+
+    // Helper for Totals
+    const currentTotal = () => {
+        if (reportType === 'sem1') return semester1?.sum;
+        if (reportType === 'sem2') return semester2?.sum;
+        return (semester1?.sum || 0) + (semester2?.sum.toFixed(2) || 0);
+    };
+
+    const currentAvg = () => {
+        if (reportType === 'sem1') return semester1?.avg;
+        if (reportType === 'sem2') return semester2?.avg;
+        return finalAverage;
+    };
+
+    // Automated Comment
+    const getAutomatedComment = () => {
+        let score = Number(currentAvg() || 0);
+        if (score >= 95) return "Excellent achievement! Keep up the outstanding work.";
+        if (score >= 90) return "Very superior performance.";
+        if (score >= 85) return "Superior performance.";
+        if (score >= 80) return "Very good performance.";
+        if (score >= 70) return "Good performance.";
+        if (score >= 60) return "Satisfactory. More effort is needed.";
+        if (score >= 50) return "Promoted, but needs significant improvement.";
+        return "Not Promoted. Hard work is required next year.";
+    };
+
+    return (
+        <div className="report-card-container mb-0" style={{ pageBreakAfter: 'always' }}>
+            
+            <div className="print-break">
+                <ReportCoverPage studentInfo={studentInfo} schoolInfo={schoolInfoData} getReportTitle={getReportTitle} />
+            </div>
+
+            <div className="w-[297mm] h-[210mm] bg-white shadow-2xl flex overflow-hidden relative print:shadow-none print:m-0 print:p-0">
+                
+                {/* --- INSIDE LEFT --- */}
+                <div className="w-1/2 h-full bg-[#f8fafc] p-8 flex flex-col border-r border-gray-200 relative z-10">
+                    {/* Student Header */}
+                    <div className="flex gap-4 items-center mb-6">
+                        <div className="w-20 h-22 rounded-2xl border-2 border-[#06b6d4] overflow-hidden shadow-md shrink-0 bg-white">
+                                {studentInfo?.photoUrl ? <img src={studentInfo.photoUrl} className="w-full h-full object-cover" alt="" /> : <div className="w-full h-full bg-gray-200"></div>}
+                            </div>
+                        <div>
+                            <h2 className="text-xl font-montserrat font-bold text-[#0f172a]">{studentInfo?.fullName || '...'}</h2>
+                            <div className="flex gap-2 text-xs font-bold text-gray-600 uppercase mt-1">
+                                <span className="bg-white px-2 py-1 rounded shadow-sm border border-gray-100">{studentInfo?.classId || '-'}</span>
+                                <span className="bg-white px-2 py-1 rounded shadow-sm border border-gray-100">Age: {studentInfo?.age}</span>
+                                <span className="bg-white px-2 py-1 rounded shadow-sm border border-gray-100">Sex: {studentInfo?.sex?.charAt(0)}</span>
+                            </div>
+                        </div>
+                    </div>
+
+                    {/* Behavior Table */}
+                    <div className="bg-white rounded-xl shadow-sm p-4 border border-gray-100 mb-4">
+                        <h3 className="text-[#06b6d4] text-xs font-black uppercase tracking-widest mb-3 flex items-center gap-2">
+                            <span className="w-2 h-2 rounded-full bg-[#06b6d4]"></span> Behavioral Evaluation
+                        </h3>
+                        <table className="w-full text-xs border-collapse mb-2">
+                            <thead>
+                                <tr className="text-gray-500 border-b border-gray-200">
+                                    <th className="text-left font-bold pb-2">Trait</th>
+                                    {(reportType === 'sem1' || reportType === 'year') && <th className="text-center font-bold pb-2 w-10">S1</th>}
+                                    {(reportType === 'sem2' || reportType === 'year')&&<th className="text-center font-bold pb-2 w-10">S2</th>}
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {/* Using 'behavior.progress' array from your JSON */}
+                                {behavior.progress && behavior.progress.map((item, index) => (
+                                    <tr key={index} className="border-b border-gray-50 last:border-0">
+                                        <td className="py-2 text-gray-800 font-medium">{item.area}</td>
+                                        {(reportType === 'sem1' || reportType === 'year') && <td className="text-center text-[#0f172a] font-bold">{item.sem1}</td>}
+                                        {(reportType === 'sem2' || reportType === 'year') && <td className="text-center text-[#0f172a] font-bold">{item.sem2}</td>}
+                                    </tr>
+                                ))}
+                            </tbody>
+                        </table>
+                        <div className="text-[10px] text-gray-500 text-center border-t border-gray-100 pt-1">
+                            <strong>Key:</strong> E=Excellent, VG=Very Good, G=Good, NI=Needs Improvement
+                        </div>
+                    </div>
+
+                    {/* Teacher's Note */}
+                    <div className="mb-4">
+                        <h4 className="text-[10px] font-bold text-gray-500 uppercase mb-1">Teacher's Note</h4>
+                        <div className="p-3 bg-cyan-50 rounded text-xs text-cyan-900 leading-snug italic border border-cyan-100 h-10 print:bg-cyan-50 flex items-center">
+                            "{getAutomatedComment()}"
+                        </div>
+                    </div>
+
+                    {/* Parent's Feedback */}
+                    <div className="flex-1 flex flex-col">
+                        <h4 className="text-[10px] font-bold text-gray-500 uppercase mb-1">Parent's Feedback & Signature</h4>
+                        <div className="flex-1 bg-white border border-gray-300 rounded relative overflow-hidden">
+                            <div className="lined-bg w-full h-full absolute top-0 left-0"></div>
+                        </div>
+                    </div>
+                </div>
+
+                {/* --- INSIDE RIGHT --- */}
+                <div className="w-1/2 h-full bg-white p-8 flex flex-col relative overflow-hidden">
+                    <div className="absolute inset-0 flex items-center justify-center pointer-events-none z-0 overflow-hidden">
+                        <img src={schoolInfoData.logo} alt="Watermark" className="w-[80%] opacity-[0.04] grayscale transform -rotate-12"/>
+                    </div>
+                    <div className="relative z-10 flex-1 flex flex-col">
+                        <div className="flex justify-between items-end mb-4 border-b-2 border-[#0f172a] pb-2">
+                            <div>
+                                <h3 className="text-xs font-bold text-gray-400 uppercase tracking-widest mb-1">{schoolInfoData.name}</h3>
+                                <h2 className="text-xl font-black text-[#0f172a] uppercase">Academic Results</h2>
+                            </div>
+                            <span className="text-xs font-bold bg-[#06b6d4] text-white px-2 py-0.5 rounded print:bg-[#06b6d4]">{getReportTitle()}</span>
+                        </div>
+
+                        <div className="flex-1 overflow-hidden">
+                            <table className="w-full text-xs border-collapse">
+                                <thead>
+                                    <tr className="bg-slate-900 text-white uppercase text-[10px] print:bg-slate-900">
+                                        <th className="py-2 px-3 text-left w-1/2 rounded-l">Subject</th>
+                                        {(reportType === 'sem1' || reportType === 'year') && <th className="py-2 text-center">Sem 1</th>}
+                                        {(reportType === 'sem2' || reportType === 'year') && <th className="py-2 text-center">Sem 2</th>}
+                                        {reportType === 'year' && <th className="py-2 text-center rounded-r bg-[#06b6d4]">Avg</th>}
+                                    </tr>
+                                </thead>
+                                {/* Updated JSX for the Table Body */}
+                                <tbody>
+                                    {processedGrades.map((r, i) => (
+                                        <tr key={i} className="border-b border-gray-100 hover:bg-cyan-50">
+                                            <td className="py-1.5 px-3 font-bold text-slate-700">{r.subjectName}</td>
+                                            
+                                            {/* Semester 1 */}
+                                            {(reportType === 'sem1' || reportType === 'year') && (
+                                                <td className="text-center text-slate-700 font-medium border-l border-gray-100">
+                                                    {/* Safe check: is it a number? */}
+                                                    {typeof r.firstSemester === 'number' ? r.firstSemester.toFixed(2) : (r.firstSemester || '-')}
+                                                </td>
+                                            )}
+
+                                            {/* Semester 2 */}
+                                            {(reportType === 'sem2' || reportType === 'year') && (
+                                                <td className="text-center text-slate-700 font-medium border-l border-gray-100">
+                                                    {/* Safe check: is it a number? */}
+                                                    {typeof r.secondSemester === 'number' ? r.secondSemester.toFixed(2) : (r.secondSemester || '-')}
+                                                </td>
+                                            )}
+
+                                            {/* Average */}
+                                            {reportType === 'year' && (
+                                                <td className="text-center font-bold text-[#06b6d4] bg-cyan-50/30 border-l border-gray-100">
+                                                    {typeof r.average === 'number' ? r.average.toFixed(2) : '-'}
+                                                </td>
+                                            )}
+                                        </tr>
+                                    ))}
+                                </tbody>
+                                <tfoot>
+                                    {supportiveGrades && supportiveGrades.map((r,i)=>(
+                                            <tr key={i} className="border-b border-gray-100 hover:bg-cyan-50">
+                                                <td className="py-1.5 px-3 font-bold text-slate-700">{r.name}</td>
+                                                {(reportType === 'sem1' || reportType === 'year') && <td className="text-center text-slate-700 font-medium">{r.sem1 ?? '-'}</td>}
+                                                {(reportType === 'sem2' || reportType === 'year') && <td className="text-center text-slate-700 font-medium">{r.sem2 ?? '-'}</td>}
+                                            </tr>
+                                        ))}
+                                    <tr className="bg-white border-t border-gray-300">
+                                        <td className="py-2 px-3 text-right uppercase text-[9px] font-bold text-red-600 tracking-wider">Absent</td>
+                                        {(reportType === 'sem1' || reportType === 'year') && <td className="text-center font-medium border-l border-gray-200">{footerData.sem1?.absent || '-'}</td>}
+                                        {(reportType === 'sem2' || reportType === 'year') && <td className="text-center font-medium border-l border-gray-200">{footerData.sem2?.absent || '-'}</td>}
+                                        {reportType === 'year' && <td className="text-center border-l border-gray-200 bg-gray-50">-</td>}
+                                    </tr>
+                                    {/* Conduct */}
+                                    <tr className="bg-white border-t border-gray-200">
+                                        <td className="py-2 px-3 text-right uppercase text-[9px] font-bold text-blue-900 tracking-wider">Conduct</td>
+                                        {(reportType === 'sem1' || reportType === 'year') && <td className="text-center font-bold border-l border-gray-200">{footerData.sem1?.conduct || '-'}</td>}
+                                        {(reportType === 'sem2' || reportType === 'year') && <td className="text-center font-bold border-l border-gray-200">{footerData.sem2?.conduct || '-'}</td>}
+                                        {reportType === 'year' && <td className="text-center border-l border-gray-200 bg-gray-50">-</td>}
+                                    </tr>
+                                    {/* Total */}
+                                    <tr className="bg-gray-50 border-t-2 border-slate-200 font-bold text-slate-800">
+                                        <td className="py-2 px-3 text-right uppercase text-[9px] tracking-wider">Total Score</td>
+                                        {(reportType === 'sem1' || reportType === 'year') && <td className="text-center border-l border-gray-200">{semester1?.sum.toFixed(2) || 0}</td>}
+                                        {(reportType === 'sem2' || reportType === 'year') && <td className="text-center border-l border-gray-200">{semester2?.sum.toFixed(2) || 0}</td>}
+                                        {reportType === 'year' && <td className="text-center border-l border-gray-200 text-[#0f172a]">{currentTotal()}</td>}
+                                    </tr>
+                                    {/* Average */}
+                                    <tr className="bg-gray-50 border-t border-gray-200 font-bold text-slate-800">
+                                        <td className="py-2 px-3 text-right uppercase text-[9px] tracking-wider">Average</td>
+                                        {(reportType === 'sem1' || reportType === 'year') && <td className="text-center border-l border-gray-200">{semester1?.avg || 0}</td>}
+                                        {(reportType === 'sem2' || reportType === 'year') && <td className="text-center border-l border-gray-200">{semester2?.avg || 0}</td>}
+                                        {reportType === 'year' && <td className="text-center border-l border-gray-200 text-[#0f172a]">{currentAvg()}</td>}
+                                    </tr>
+                                    {/* Rank */}
+                                    <tr className="bg-[#0f172a] text-white font-bold print:bg-[#0f172a] print:text-white">
+                                        <td className="py-2 px-3 text-right uppercase text-[9px] tracking-wider rounded-bl">Rank</td>
+                                        {(reportType === 'sem1' || reportType === 'year') && <td className="text-center border-l border-slate-600">{rank?.sem1 || '-'}</td>}
+                                        {(reportType === 'sem2' || reportType === 'year') && <td className="text-center border-l border-slate-600">{rank?.sem2 || '-'}</td>}
+                                        {reportType === 'year' && <td className="text-center border-l border-slate-600 bg-[#06b6d4] rounded-br print:bg-[#06b6d4]">{rank?.overall || '-'}</td>}
+                                    </tr>
+                                </tfoot>
+                            </table>
+                        </div>
+
+                        {(reportType === 'year') && <div className="mb-6 border-t border-gray-100 pt-4 mt-6">
+                            <div className="flex items-end gap-2 text-sm text-[#0f172a]">
+                                <span className="font-bold">Promoted to:</span> 
+                                <span className="flex-1 border-b-2 border-gray-400 border-dotted pl-2 font-mono font-bold">{studentInfo?.promotedTo || ""}</span>
+                            </div>
+                        </div>}
+
+                        <div className="flex justify-between items-end">
+                            {['Homeroom', 'Director', 'Parent'].map((role) => (
+                                <div key={role} className="text-center w-1/3">
+                                    <div className="h-4 border-b border-gray-300 w-2/3 mx-auto"></div>
+                                    <span className="text-[9px] font-bold text-gray-400 uppercase tracking-widest mt-1 block">{role}</span>
+                                </div>
+                            ))}
+                        </div>
+                    </div>
+                </div>
+                <div className="absolute left-1/2 top-0 bottom-0 w-px border-l border-dashed border-gray-300 no-print"></div>
+            </div>
+        </div>
+    );
+};
+
+export default ReportCardDocument;

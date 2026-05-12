@@ -1,0 +1,28 @@
+import React from 'react';
+import ReactDOM from 'react-dom/client';
+import { BrowserRouter as Router } from 'react-router-dom';
+import './index.css';
+import './i18n';
+import App from './App';
+
+
+const root = ReactDOM.createRoot(document.getElementById('root'));
+root.render(
+  <React.StrictMode>
+    <Router>
+        <App />
+    </Router>
+  </React.StrictMode>
+);
+
+if (import.meta.env.PROD && 'serviceWorker' in navigator) {
+  window.addEventListener('load', () => {
+    navigator.serviceWorker.register('/service-worker.js')
+      .then((registration) => {
+        console.log('✅ ServiceWorker registered with scope:', registration.scope);
+      })
+      .catch((err) => {
+        console.log('❌ ServiceWorker registration failed:', err);
+      });
+  });
+}

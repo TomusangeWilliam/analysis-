@@ -1,0 +1,180 @@
+import React, { useState, useEffect } from 'react';
+import studentService from '../services/studentService';
+import reportCardService from '../services/reportCardService';
+import ReportCardDocument from '../components/ReportCardDocument';
+import rankService from '../services/rankService';
+import {schoolInfoData} from '../utils/schoolInfoData';
+import ClassStreamSelector from '../components/ClassStreamSelector';
+
+const ClassReportGenerator = () => {
+    
+    // --- STATE ---
+    const [reportType, setReportType] = useState('year');
+    const [selectedClassId, setSelectedClassId] = useState('');
+    const [selectedStreamId, setSelectedStreamId] = useState('all');
+    const [classReportData, setClassReportData] = useState([]); 
+    const [loading, setLoading] = useState(false);
+    const [progress, setProgress] = useState(0);
+
+    // No manual fetching of unique grades
+
+    const handleGenerate = async () => {
+        if (!selectedClassId) return;
+        
+        setLoading(true);
+        setClassReportData([]);
+        setProgress(10); // Start progress
+
+        try {
+            // 1. SINGLE CALL TO BACKEND (Fetches Grades & Behavior)
+            const res = await reportCardService.getClassReports(selectedClassId, selectedStreamId);
+            let reports = res.data.data;
+
+            if (!reports || reports.length === 0) {
+                alert("No reports found for this class.");
+                setLoading(false);
+                setProgress(0);
+                return;
+            }
+
+            // Update progress to 30% after fetching the main data
+            setProgress(30);
+
+            // 2. Fetch Ranks for the whole list with PROGRESS TRACKING
+            let completedCount = 0;
+            const totalStudents = reports.length;
+
+            const reportsWithRank = await Promise.all(reports.map(async (report) => {
+                const { studentId, classId, academicYear } = report.studentInfo;
+                let rankData = { sem1: '-', sem2: '-', overall: '-' };
+
+                try {
+                    // Fetch Rank
+                    rankData = await rankService.getRankByStudent(studentId, classId, academicYear);
+                } catch (e) {
+                    console.warn(`Rank failed for ${studentId}`);
+                }
+
+                // --- PROGRESS LOGIC ---
+                completedCount++;
+                // Calculate percentage: Start at 30%, use remaining 70% for ranks
+                const currentProgress = 30 + Math.round((completedCount / totalStudents) * 70);
+                setProgress(currentProgress);
+                // ----------------------
+
+                return { ...report, rank: rankData };
+            }));
+
+            // 3. Update State
+            setClassReportData(reportsWithRank);
+            setProgress(100);
+
+        } catch (err) {
+            alert("Error generating reports");
+            setProgress(0);
+        } finally {
+            setTimeout(() => {
+                setLoading(false);
+            }, 500);
+        }
+    };
+
+    return (
+        <div className="min-h-screen bg-gray-100">
+            
+            <style>{`
+                @import url('https://fonts.googleapis.com/css2?family=Montserrat:wght@400;500;600;700;800;900&family=Oswald:wght@300;500;700&family=Playfair+Display:wght@700&display=swap');
+                @media print {
+                    @page { size: A4 landscape; margin: 0mm !important; }
+                    html, body { width: 100%; height: 100%; margin: 0 !important; padding: 0 !important; }
+                    .no-print { display: none !important; }
+                    .print-wrapper { position: absolute; top: 0; left: 0; width: 100%; }
+                    .print-break { page-break-after: always; }
+                    .bg-slate-900 { background-color: #0f172a !important; -webkit-print-color-adjust: exact; }
+                    .bg-cyan-500 { background-color: #06b6d4 !important; -webkit-print-color-adjust: exact; }
+                }
+            `}</style>
+
+            {/* --- CONTROLS (Hidden on Print) --- */}
+            <div className="bg-white shadow p-4 mb-8 no-print sticky top-0 z-5">
+                <div className="max-w-6xl mx-auto flex flex-col md:flex-row gap-4 items-center justify-between">
+                    <h1 className="text-xl font-bold text-slate-800">🖨️ Batch Report Generator</h1>
+                    
+                    <div className="flex flex-col md:flex-row gap-4 items-center w-full md:w-auto">
+                        
+                        {/* 1. Grade Selector */}
+                        <div className="w-full md:w-auto flex-1">
+                            <ClassStreamSelector 
+                                selectedClass={selectedClassId}
+                                onClassChange={setSelectedClassId}
+                                selectedStream={selectedStreamId}
+                                onStreamChange={setSelectedStreamId}
+                                required={true}
+                                showAllStreamsOption={true}
+                            />
+                        </div>
+
+                        {/* 2. Report Type Selector (Lifted Up!) */}
+                        <div className="bg-gray-100 p-1 rounded-lg flex">
+                            {['sem1', 'sem2', 'year'].map(type => (
+                                <button 
+                                    key={type} 
+                                    onClick={() => setReportType(type)} 
+                                    className={`px-3 py-1 text-xs font-bold rounded uppercase transition-colors ${reportType === type ? 'bg-slate-900 text-white shadow' : 'text-gray-500 hover:text-slate-900'}`}
+                                >
+                                    {type === 'year' ? 'Annual' : type === 'sem1' ? 'Sem 1' : 'Sem 2'}
+                                </button>
+                            ))}
+                        </div>
+
+                        {/* 3. Generate Button */}
+                        <button 
+                            onClick={handleGenerate} 
+                            disabled={loading || !selectedClassId}
+                            className="bg-cyan-600 text-white px-6 py-2 rounded font-bold hover:bg-cyan-700 disabled:opacity-50"
+                        >
+                            {loading ? `Fetching... ${progress}%` : "Generate All"}
+                        </button>
+
+                        {/* 4. Print Button */}
+                        {classReportData.length > 0 && !loading && (
+                            <button 
+                                onClick={() => window.print()} 
+                                className="bg-slate-900 text-white px-6 py-2 rounded font-bold hover:bg-slate-800 shadow-lg"
+                            >
+                                Print {classReportData.length} Cards
+                            </button>
+                        )}
+                    </div>
+                </div>
+                {loading && (
+                    <div className="w-full bg-gray-200 h-2 mt-4 rounded overflow-hidden">
+                        <div className="bg-cyan-500 h-full transition-all duration-300" style={{ width: `${progress}%` }}></div>
+                    </div>
+                )}
+            </div>
+
+            {/* --- PREVIEW / PRINT AREA --- */}
+            {classReportData.length > 0 ? (
+                <div className="print-wrapper flex flex-col items-center pb-20">
+                    {classReportData.map((report, index) => (
+                        <div key={index} className="w-[297mm] mb-10 print:mb-0">
+                            <ReportCardDocument 
+                                reportData={report} 
+                                schoolInfoData={schoolInfoData} 
+                                reportType={reportType} 
+                            />
+                        </div>
+                    ))}
+                </div>
+            ) : (
+                <div className="flex h-64 items-center justify-center text-gray-400 no-print">
+                    {loading ? "Generating Reports..." : "Select a grade and click Generate to see reports."}
+                </div>
+            )}
+
+        </div>
+    );
+};
+
+export default ClassReportGenerator;

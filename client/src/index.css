@@ -1,0 +1,10 @@
+@import 'tailwindcss';
+
+body {
+  font-family: 'Lato', 'Noto Sans Ethiopic', 'Menbere',sans-serif;
+}
+
+html {
+  scroll-behavior: smooth;
+}
+

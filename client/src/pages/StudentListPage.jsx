@@ -1,0 +1,275 @@
+import React, { useState, useEffect, useMemo } from 'react';
+import { Link } from 'react-router-dom';
+import { useTranslation } from 'react-i18next';
+import studentService from '../services/studentService';
+import authService from '../services/authService';
+import userService from '../services/userService';
+import classService from '../services/classService';
+import StudentStats from '../components/StudentStats';
+
+const StudentListPage = () => {
+    const { t } = useTranslation(); 
+    const [currentUser] = useState(authService.getCurrentUser());
+    const [allStudents, setAllStudents] = useState([]);
+    const [allAllowedClasses, setAllAllowedClasses] = useState([]);
+    const [selectedSection, setSelectedSection] = useState(null); 
+    const [selectedClass, setSelectedClass] = useState(null);
+    const [selectedStream, setSelectedStream] = useState('all');
+    const [streams, setStreams] = useState([]);
+    const [searchTerm, setSearchTerm] = useState(''); 
+    const [loading, setLoading] = useState(true);
+    const [error, setError] = useState(null);
+
+    // --- 1. Data Fetching ---
+    useEffect(() => {
+        const loadInitialData = async () => {
+            try {
+                const studentRes = await studentService.getAllStudents();
+                
+                if (!studentRes.data || !Array.isArray(studentRes.data.data)) {
+                    if (studentRes.data?.error) throw new Error(t('offline_mode'));
+                    throw new Error(t('error'));
+                }
+
+                const fetchedStudents = studentRes.data.data;
+                setAllStudents(fetchedStudents);
+
+                const classRes = await classService.getClasses();
+                const allClasses = classRes.data.data || [];
+
+                let allowed = [];
+                const level = currentUser.schoolLevel ? currentUser.schoolLevel.toLowerCase() : 'all';
+                
+                if (currentUser.role === 'admin' || level === 'all') {
+                    allowed = allClasses;
+                } else {
+                    allowed = allClasses.filter(c => c.schoolLevel === level);
+                }
+                
+                setAllAllowedClasses(allowed);
+
+            } catch (err) {
+                setError(err.message || t('error'));
+            } finally {
+                setLoading(false);
+            }
+        };
+        loadInitialData();
+    }, [currentUser, t]);
+
+    // --- 2. Filters ---
+    const visibleClassButtons = useMemo(() => {
+        if (!selectedSection) return [];
+        return allAllowedClasses.filter(c => c.schoolLevel === selectedSection);
+    }, [selectedSection, allAllowedClasses]);
+
+    useEffect(() => {
+        if (selectedClass) {
+            classService.getStreamsByClass(selectedClass._id).then(res => {
+                setStreams(res.data.data || []);
+            });
+        } else {
+            setStreams([]);
+        }
+    }, [selectedClass]);
+
+    const tableStudents = useMemo(() => {
+        if (!selectedClass) return [];
+        return allStudents
+            .filter(s => s.class?._id === selectedClass._id || s.class === selectedClass._id)
+            .filter(s => selectedStream === 'all' || s.stream === selectedStream || s.stream?._id === selectedStream)
+            .filter(s => searchTerm === '' || s.fullName.toLowerCase().includes(searchTerm.toLowerCase()) || s.studentId.toLowerCase().includes(searchTerm.toLowerCase()))
+            .sort((a, b) => a.fullName.localeCompare(b.fullName));
+    }, [selectedClass, selectedStream, allStudents, searchTerm]);
+
+    const graphStudents = useMemo(() => {
+        const allowedIds = allAllowedClasses.map(c => c._id);
+        let relevantStudents = allStudents.filter(s => allowedIds.includes(s.class?._id || s.class));
+        if (selectedSection) return relevantStudents.filter(s => (s.class?.schoolLevel || '') === selectedSection);
+        return relevantStudents; 
+    }, [allStudents, allAllowedClasses, selectedSection]);
+
+
+    // --- 3. Section Card Component ---
+    const SectionCard = ({ id, label, color }) => {
+        const count = allStudents.filter(s => {
+            const studentClassId = s.class?._id || s.class;
+            const cls = allAllowedClasses.find(c => c._id === studentClassId);
+            return cls && cls.schoolLevel === id;
+        }).length;
+
+        if (count === 0 && currentUser.role !== 'admin') return null;
+
+        return (
+            <div 
+                onClick={() => { setSelectedSection(id); setSelectedClass(null); }}
+                className={`flex-1 min-w-[200px] p-6 rounded-xl border-2 cursor-pointer transition-all transform hover:-translate-y-1 hover:shadow-lg bg-white ${selectedSection === id ? 'ring-4 ring-offset-2 ring-pink-400 border-transparent shadow-xl' : color}`}
+            >
+                <h3 className="text-xl font-bold uppercase tracking-wide opacity-80">{label}</h3>
+                <div className="mt-2 text-3xl font-black">{count} <span className="text-sm font-normal opacity-60">{t('students')}</span></div>
+            </div>
+        );
+    };
+
+    if (loading) return <div className="p-10 text-center text-gray-600">{t('loading')}</div>;
+    if (error) return <div className="p-10 text-center text-red-500">{error}</div>;
+
+    return (
+        <div className="p-6 bg-gray-50 min-h-screen">
+            
+            {/* Header */}
+            <div className="flex flex-col md:flex-row justify-between items-center mb-8 gap-4">
+                <div>
+                    <h2 className="text-3xl font-bold text-gray-800">{t('students_list')}</h2>
+                    <p className="text-sm text-gray-500">{t('manage_records_desc')}</p>
+                </div>
+                <div className="flex gap-3">
+                    {['admin', 'staff'].includes(currentUser.role) && (
+                        <>
+                            <Link to="/students/add" className="bg-pink-600 hover:bg-pink-700 text-white font-bold py-2 px-4 rounded shadow transition-colors">+ {t('add')}</Link>
+                            <Link to="/students/import" className="bg-green-600 hover:bg-green-700 text-white font-bold py-2 px-4 rounded shadow transition-colors">{t('import_excel')}</Link>
+                        </>
+                    )}
+                </div>
+            </div>
+
+            {/* --- GRAPHS --- */}
+            {!selectedClass && (
+                <StudentStats 
+                    students={graphStudents} 
+                    sectionName={
+                        selectedSection === 'kg' ? t('section_kg') :
+                        selectedSection === 'primary' ? t('section_primary') :
+                        selectedSection === 'highSchool' ? t('section_high_school') :
+                        t('school_overview')
+                    } 
+                />
+            )}
+
+            {/* --- SECTION SELECTOR --- */}
+            {!selectedClass && (
+                <div className="flex flex-wrap gap-6 mb-8">
+                    <SectionCard id="kg" label={t('section_kg')} color="border-purple-200 text-purple-800" />
+                    <SectionCard id="primary" label={t('section_primary')} color="border-blue-200 text-blue-800" />
+                    <SectionCard id="highSchool" label={t('section_high_school')} color="border-indigo-200 text-indigo-800" />
+                </div>
+            )}
+
+            {/* --- CLASS SELECTOR --- */}
+            {selectedSection && (
+                <div className="mb-8 bg-white p-5 rounded-xl shadow-sm border border-gray-200 animate-fade-in">
+                    <div className="flex justify-between items-center mb-4">
+                        <h4 className="text-sm font-bold text-gray-700 uppercase">Select Class:</h4>
+                        <button onClick={() => { setSelectedSection(null); setSelectedClass(null); }} className="text-sm text-blue-600 hover:underline">
+                            {t('clear_section')}
+                        </button>
+                    </div>
+                    <div className="flex flex-wrap gap-3">
+                        {visibleClassButtons.map(cls => (
+                            <button 
+                                key={cls._id} 
+                                onClick={() => setSelectedClass(cls)}
+                                className={`px-4 py-2 border rounded-md font-bold text-sm transition-all ${selectedClass?._id === cls._id ? 'bg-pink-600 text-white border-pink-600 shadow-md' : 'bg-gray-50 text-gray-700 hover:bg-gray-100'}`}
+                            >
+                                {cls.name}
+                            </button>
+                        ))}
+                    </div>
+                </div>
+            )}
+
+            {/* --- STREAM SELECTOR --- */}
+            {selectedClass && (
+                <div className="mb-8 bg-white p-4 rounded-xl shadow-sm border border-gray-200 animate-fade-in">
+                    <div className="flex flex-wrap gap-2 items-center">
+                        <h4 className="text-xs font-bold text-gray-500 uppercase mr-2">Stream:</h4>
+                        <button 
+                            onClick={() => setSelectedStream('all')}
+                            className={`px-3 py-1 rounded-full text-xs font-bold ${selectedStream === 'all' ? 'bg-blue-600 text-white' : 'bg-gray-100 text-gray-600'}`}
+                        >
+                            All Streams
+                        </button>
+                        {streams.map(str => (
+                            <button 
+                                key={str._id} 
+                                onClick={() => setSelectedStream(str._id)}
+                                className={`px-3 py-1 rounded-full text-xs font-bold ${selectedStream === str._id ? 'bg-blue-600 text-white' : 'bg-gray-100 text-gray-600'}`}
+                            >
+                                {str.name}
+                            </button>
+                        ))}
+                    </div>
+                </div>
+            )}
+
+            {/* --- STUDENT TABLE --- */}
+            {selectedClass && (
+                <div className="bg-white rounded-lg shadow border border-gray-200 overflow-hidden animate-slide-up">
+                    <div className="p-4 border-b border-gray-200 flex flex-col md:flex-row justify-between items-center gap-4 bg-gray-50">
+                        <h3 className="text-xl font-bold text-gray-800">
+                            {selectedClass.name} {selectedStream !== 'all' && streams.find(s=>s._id===selectedStream)?.name} <span className="text-sm font-normal text-gray-500">({tableStudents.length} {t('students')})</span>
+                        </h3>
+                        <input 
+                            type="text" 
+                            placeholder={t('search_placeholder')} 
+                            value={searchTerm}
+                            onChange={(e) => setSearchTerm(e.target.value)}
+                            className="border border-gray-300 rounded px-3 py-2 text-sm w-full md:w-64 focus:ring-2 focus:ring-pink-500 outline-none"
+                        />
+                    </div>
+
+                    <div className="overflow-x-auto">
+                        <table className="min-w-full divide-y divide-gray-200">
+                            <thead className="bg-gray-100 text-gray-600 uppercase text-xs font-bold">
+                                <tr>
+                                    <th className="px-4 py-3 text-left">{t('id_no')}</th>
+                                    <th className="px-4 py-3 text-left">{t('full_name')}</th>
+                                    <th className="px-4 py-3 text-left">{t('gender')}</th>
+                                    <th className="px-4 py-3 text-left">DOB</th>
+                                    <th className="px-4 py-3 text-left">Mother</th>
+                                    <th className="px-4 py-3 text-left">Mother Contacts</th>
+                                    <th className="px-4 py-3 text-left">Father Contacts</th>
+                                    <th className="px-4 py-3 text-left">Health</th>
+                                    <th className="px-4 py-3 text-center">{t('actions')}</th>
+                                </tr>
+                            </thead>
+                            <tbody className="divide-y divide-gray-200 bg-white">
+                                {tableStudents.length > 0 ? (
+                                    tableStudents.map(student => (
+                                        <tr key={student._id} className="hover:bg-pink-50 transition-colors text-sm">
+                                            <td className="px-4 py-4 font-mono text-gray-500">{student.studentId}</td>
+                                            <td className="px-4 py-4 font-bold text-gray-800 whitespace-nowrap">
+                                                <Link to={`/students/${student._id}`} className="hover:text-pink-600 hover:underline">{student.fullName}</Link>
+                                            </td>
+                                            <td className="px-4 py-4 text-gray-600">{t(student.gender)}</td>
+                                            <td className="px-4 py-4 text-gray-600 whitespace-nowrap">{student.dateOfBirth}</td>
+                                            <td className="px-4 py-4 text-gray-600">
+                                                <div className="text-xs font-bold">{student.motherName}</div>
+                                            </td>
+                                            <td className="px-4 py-4 text-gray-600 text-xs">
+                                                {student.motherContact}
+                                            </td>
+                                            <td className="px-4 py-4 text-gray-600 text-xs">
+                                                {student.fatherContact}
+                                            </td>
+                                            <td className="px-4 py-4 text-gray-600 max-w-[150px] truncate" title={student.healthStatus}>
+                                                {student.healthStatus}
+                                            </td>
+                                            <td className="px-4 py-4 text-center">
+                                                <Link to={`/students/${student._id}`} className="text-indigo-600 hover:text-indigo-900 font-bold">{t('view')}</Link>
+                                            </td>
+                                        </tr>
+                                    ))
+                                ) : (
+                                    <tr><td colSpan="8" className="px-6 py-8 text-center text-gray-500">{t('no_students_match')}</td></tr>
+                                )}
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            )}
+        </div>
+    );
+};
+
+export default StudentListPage;
